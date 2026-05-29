@@ -1,0 +1,199 @@
+import type {
+  Pokemon,
+  Engine1Response,
+  Engine2Response,
+  Engine3Response,
+  ModelMetrics,
+  PredictionWithResult,
+  AuditEntry,
+  CounterMetrics,
+} from '@/types';
+import { getAuthHeader } from './auth';
+
+const BASE = '/api';
+
+/** All NestJS responses are wrapped in { success: true, data: T }. */
+interface ApiEnvelope<T> { success: boolean; data: T }
+
+/**
+ * Generic fetch helper. Automatically unwraps NestJS { success, data } envelopes
+ * so callers receive the inner payload directly.
+ */
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeader(),
+      ...(options?.headers ?? {}),
+    },
+    ...options,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const json: unknown = await res.json();
+  // Unwrap NestJS { success, data } envelope if present
+  if (json !== null && typeof json === 'object' && 'data' in json && 'success' in json) {
+    return (json as ApiEnvelope<T>).data;
+  }
+  return json as T;
+}
+
+export const api = {
+  // ---------------------------------------------------------------------------
+  // Pokémon
+  // ---------------------------------------------------------------------------
+  getPokemon(filters?: { role?: string; type?: string; is_assigned?: number }): Promise<Pokemon[]> {
+    const params = new URLSearchParams();
+    if (filters?.role) params.set('role', filters.role);
+    if (filters?.type) params.set('type', filters.type);
+    if (filters?.is_assigned !== undefined) params.set('is_assigned', String(filters.is_assigned));
+    const qs = params.toString();
+    return request<Pokemon[]>(`/pokemon${qs ? `?${qs}` : ''}`);
+  },
+
+  getAssignedPokemon(): Promise<Pokemon[]> {
+    return request<Pokemon[]>('/pokemon?is_assigned=1');
+  },
+
+  getPokemonByName(name: string): Promise<Pokemon> {
+    return request<Pokemon>(`/pokemon/${encodeURIComponent(name)}`);
+  },
+
+  getMyPool(): Promise<Array<Pokemon & { user_assigned: boolean }>> {
+    return request<Array<Pokemon & { user_assigned: boolean }>>('/pokemon/my-pool');
+  },
+
+  assignPokemon(pokemonId: number): Promise<void> {
+    return request<void>('/pokemon/assign', {
+      method: 'POST',
+      body: JSON.stringify({ pokemon_id: pokemonId }),
+    });
+  },
+
+  unassignPokemon(pokemonId: number): Promise<void> {
+    return request<void>('/pokemon/assign', {
+      method: 'DELETE',
+      body: JSON.stringify({ pokemon_id: pokemonId }),
+    });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Engine 1
+  // ---------------------------------------------------------------------------
+  generateGymLeaderTeam(
+    theme: string,
+    difficulty: 'easy' | 'medium' | 'hard',
+    region?: string,
+    gymLeaderName?: string,
+    section?: string,
+    groupName?: string,
+  ): Promise<Engine1Response> {
+    return request<Engine1Response>('/engine1/generate', {
+      method: 'POST',
+      body: JSON.stringify({ theme, difficulty, region, gym_leader_name: gymLeaderName, section, group_name: groupName }),
+    });
+  },
+
+  // ---------------------------------------------------------------------------
+  // Engine 2
+  // ---------------------------------------------------------------------------
+  getCounterTeam(
+    opponentTeam: string[],
+    challengerRegion?: string,
+    section?: string,
+    groupName?: string,
+  ): Promise<Engine2Response> {
+    return request<Engine2Response>('/engine2/counter', {
+      method: 'POST',
+      body: JSON.stringify({ opponent_team: opponentTeam, challenger_region: challengerRegion, section, group_name: groupName }),
+    });
+  },
+
+  getCounterSuccessRate(): Promise<CounterMetrics> {
+    return request<CounterMetrics>('/engine2/metrics');
+  },
+
+  // ---------------------------------------------------------------------------
+  // Engine 3
+  // ---------------------------------------------------------------------------
+  predictBattle(
+    matchId: string,
+    battlerA: string,
+    battlerB: string,
+    teamA: string[],
+    teamB: string[]
+  ): Promise<Engine3Response> {
+    return request<Engine3Response>('/engine3/predict', {
+      method: 'POST',
+      body: JSON.stringify({
+        match_id: matchId,
+        battler_a: battlerA,
+        battler_b: battlerB,
+        team_a: teamA,
+        team_b: teamB,
+      }),
+    });
+  },
+
+  recordBattleResult(
+    matchId: string,
+    actualWinner: string,
+    replayLink?: string,
+    screenshotLink?: string,
+    finalScore?: string
+  ): Promise<void> {
+    return request<void>('/engine3/result', {
+      method: 'POST',
+      body: JSON.stringify({
+        match_id: matchId,
+        actual_winner: actualWinner,
+        replay_link: replayLink,
+        screenshot_link: screenshotLink,
+        final_score: finalScore,
+      }),
+    });
+  },
+
+  getBattleHistory(): Promise<PredictionWithResult[]> {
+    return request<PredictionWithResult[]>('/engine3/history');
+  },
+
+  getAccuracyMetrics(): Promise<ModelMetrics> {
+    return request<ModelMetrics>('/engine3/accuracy');
+  },
+
+  // ---------------------------------------------------------------------------
+  // Audit
+  // ---------------------------------------------------------------------------
+  getAuditLog(limit?: number): Promise<AuditEntry[]> {
+    const qs = limit ? `?limit=${limit}` : '';
+    return request<AuditEntry[]>(`/audit${qs}`);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Auth
+  // ---------------------------------------------------------------------------
+  register(
+    username: string,
+    password: string,
+    section?: string,
+  ): Promise<{ access_token: string; username: string; id: string }> {
+    return request('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, section }),
+    });
+  },
+
+  login(
+    username: string,
+    password: string,
+  ): Promise<{ access_token: string; username: string; id: string }> {
+    return request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+  },
+};
